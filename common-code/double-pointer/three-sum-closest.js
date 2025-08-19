@@ -24,23 +24,32 @@
  * @return {number}
  */
 var threeSumClosest = function(nums, target) {
-  const list = nums.sort((a,b) => a-b);
-  let result=nums[0];
-  for(let mid=1; mid<right; mid++) {
-      let left=0,right=nums.length -1;
-      let t = list[left]+list[mid]+list[right];
-      if (t===target) {
-        result = t
-        break;
-      } 
-      while(right>mid && t > target) {
-        right--;
-        t = list[left]+list[mid]+list[right]
+    const list = nums.sort((a,b)=> a-b);
+    let left = 0, right = nums.length -1;
+    let res = null;
+    let resFind = false;
+    for(let mid=left+1; mid < right && !resFind; mid++) { // 外层循环确定中间数mid位置
+      while(left< mid && mid < right) { // 内层双指针left，right分别移动收缩，更新每一次的最近值
+        let sum = list[left] + list[mid]+ list[right];
+        res = res === null? sum: getClosest(target, res, sum);
+        if(sum > target) {
+          right--;
+        }
+        if(sum < target) {
+          left++;
+        }
+        if(sum === target) {
+          resFind = true;
+          break;
+        }
       }
-      if (t===target) {
-        result = t
-        break;
-      } 
+      left = 0; right = nums.length -1; // reset
     }
-  return result
+    return res;
 };
+
+function getClosest(target, a, b) {
+    return Math.abs(a-target) > Math.abs(b-target) ? b: a;
+}
+threeSumClosest([1,3,4,7,8,9], 15)
+// threeSumClosest([-84,92,26,19,-7,9,42,-51,8,30,-100,-13,-38], 78)
