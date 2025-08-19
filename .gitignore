@@ -1,0 +1,6 @@
+result/
+*.pyc
+__pycache__
+.DS_Store
+*.out
+.vscode
