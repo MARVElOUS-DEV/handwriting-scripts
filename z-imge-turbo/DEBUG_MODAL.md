@@ -1,5 +1,34 @@
 # Debugging Modal Apps - Quick Guide
 
+## 🔐 Setup: Create Required Modal Secrets (First Time Only)
+
+Before deploying, you need to create Modal secrets for authentication and session management:
+
+### 1. HuggingFace Token (Required for model access):
+```bash
+modal secret create huggingface-secret HF_TOKEN=hf_your_token_here
+```
+Get your token from: https://huggingface.co/settings/tokens
+
+### 2. Gradio Authentication (Recommended for security):
+```bash
+modal secret create gradio-auth GRADIO_USER=admin GRADIO_PASS=your_secure_password
+```
+
+### 3. Gradio Session Secret (Recommended for persistent sessions):
+```bash
+# Generate a secure random key and store it
+modal secret create gradio-secret GRADIO_SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
+```
+
+**Why is the session secret important?**
+- **Without it**: User sessions reset on every deployment (users get logged out)
+- **With it**: Sessions persist across deployments, file uploads work reliably
+
+**You only need to create these secrets once** - Modal will inject them into all your deployments automatically.
+
+---
+
 ## 🔥 Method 1: Modal Serve (Hot Reload - BEST for Development)
 
 **Automatically reloads when you change code!**

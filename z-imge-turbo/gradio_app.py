@@ -453,39 +453,52 @@ def main():
     server_port = int(os.getenv("GRADIO_SERVER_PORT", "8000"))
     secret_key = os.getenv("GRADIO_SECRET_KEY")
 
+    # Always use FastAPI with proper session middleware for file uploads and auth
+    app = FastAPI()
+    
+    # Add session middleware for persistent sessions (required for file uploads)
     if secret_key:
-        print("Starting with persistent session storage (secret_key provided)")
-        app = FastAPI()
-        # Note: We rely on Gradio to add SessionMiddleware internally using the GRADIO_SECRET_KEY env var
-        
-        auth_dependency = authenticate if (auth_user and auth_pass) else None
-
-        app = gr.mount_gradio_app(
-            app,
-            demo,
-            path="/",
-            auth=auth_dependency,
-            auth_message="Please login to access Z-Image-Turbo" if auth_dependency else None
-        )
-        
-        if auth_user and auth_pass:
-            print(f"Authentication enabled for user: {auth_user}")
-        else:
-            print("Warning: No authentication configured. Set GRADIO_USER and GRADIO_PASS for security.")
-
-        uvicorn.run(app, host=server_name, port=server_port, proxy_headers=True, forwarded_allow_ips="*")
-    elif auth_user and auth_pass:
-        print(f"Authentication enabled for user: {auth_user}")
-        demo.launch(
-            server_name=server_name,
-            server_port=server_port,
-            auth=authenticate,
-            auth_message="Please login to access Z-Image-Turbo",
-            theme=gr.themes.Soft(),
+        print("✅ Persistent session storage enabled (secret_key provided)")
+        app.add_middleware(
+            SessionMiddleware,
+            secret_key=secret_key,
+            max_age=86400,  # 24 hours
+            same_site="lax",
+            https_only=False,  # Set to True in production with HTTPS
         )
     else:
-        print("Warning: No authentication configured. Set GRADIO_USER and GRADIO_PASS for security.")
-        demo.launch(server_name=server_name, server_port=server_port, theme=gr.themes.Soft())
+        print("⚠️  Using temporary session storage (no secret_key)")
+        # Use a temporary key for this session only
+        import secrets
+        temp_key = secrets.token_hex(32)
+        app.add_middleware(
+            SessionMiddleware,
+            secret_key=temp_key,
+            max_age=3600,  # 1 hour for temporary sessions
+            same_site="lax",
+            https_only=False,
+        )
+    
+    # Setup authentication
+    auth_dependency = authenticate if (auth_user and auth_pass) else None
+    
+    # Mount Gradio app
+    app = gr.mount_gradio_app(
+        app,
+        demo,
+        path="/",
+        auth=auth_dependency,
+        auth_message="Please login to access Z-Image-Turbo" if auth_dependency else None
+    )
+    
+    # Status messages
+    if auth_user and auth_pass:
+        print(f"✅ Authentication enabled for user: {auth_user}")
+    else:
+        print("⚠️  No authentication configured. Set GRADIO_USER and GRADIO_PASS for security.")
+    
+    # Run server
+    uvicorn.run(app, host=server_name, port=server_port, proxy_headers=True, forwarded_allow_ips="*")
 
 
 if __name__ == "__main__":

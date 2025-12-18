@@ -6,7 +6,6 @@
 
 import io
 import base64
-import secrets
 from pathlib import Path
 
 import modal
@@ -196,14 +195,10 @@ class ZImageInference:
 # =============================================================================
 _ui_secrets = [s for s in [hf_secret, gradio_auth_secret] if s is not None]
 
-# Generate a consistent secret key for this deployment
-GRADIO_SECRET_KEY = secrets.token_hex(32)
-
 @app.function(
     gpu="L40S",
     volumes={"/cache": vol},
     secrets=_ui_secrets,
-    env={"GRADIO_SECRET_KEY": GRADIO_SECRET_KEY},
     timeout=86400,  # Max function runtime: 24 hours
     container_idle_timeout=600,  # Keep container warm for 10 min after last request
     keep_warm=0,  # Keep 1 container pre-warmed and ready
