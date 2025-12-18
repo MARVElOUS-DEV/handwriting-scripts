@@ -1,0 +1,9 @@
+[project]
+name = "z-image-turbo"
+version = "0.1.0"
+description = "Z-Image-Turbo inference service on Modal"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "modal>=1.2.5",
+]
