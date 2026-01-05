@@ -6,9 +6,17 @@
 
 import io
 import base64
+import sys
+import os
 from pathlib import Path
 
 import modal
+
+# Add repo root to sys.path to allow importing modal_libs
+repo_root = Path(__file__).parent.parent
+sys.path.append(str(repo_root))
+
+from modal_libs import get_base_image, get_hf_secret, get_model_cache_volume
 
 # =============================================================================
 # S1: 环境准备 - 构建基础镜像
@@ -16,46 +24,28 @@ import modal
 LOCAL_DIR = Path(__file__).parent
 
 image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("git")
-    .pip_install(
-        "torch>=2.4.0",
-        "diffusers>=0.33.0",
-        "transformers>=4.47.0",
-        "accelerate>=1.2.0",
-        "safetensors>=0.4.0",
-        "sentencepiece>=0.2.0",
-        "huggingface_hub[hf_transfer]>=0.27.0",
-        "fastapi[standard]>=0.115.0",
-        "pillow>=10.0.0",
-        "gradio>=6.0.0",
-        "itsdangerous",
-        "uvicorn",
+    get_base_image(
+        python_version="3.12", pip_packages=["gradio>=6.0.0", "itsdangerous"]
     )
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    .add_local_python_source("modal_libs")
     .add_local_file(LOCAL_DIR / "gradio_app.py", "/app/gradio_app.py")
 )
 
 # HuggingFace Secret
-try:
-    hf_secret = modal.Secret.from_name("huggingface-secret")
-except modal.exception.NotFoundError:
-    hf_secret = None
+hf_secret = get_hf_secret()
 
-# Gradio Auth Secret (create with: modal secret create gradio-auth GRADIO_USER=admin GRADIO_PASS=yourpassword)
-try:
-    gradio_auth_secret = modal.Secret.from_name("gradio-auth")
-except modal.exception.NotFoundError:
-    gradio_auth_secret = None
+# Gradio Auth Secret
+gradio_auth_secret = get_hf_secret("gradio-auth")
 
 # =============================================================================
 # S2: Modal App 配置
 # =============================================================================
-vol = modal.Volume.from_name("z-image-turbo-cache", create_if_missing=True)
+vol = get_model_cache_volume("z-image-turbo-cache")
 app = modal.App(name="z-image-turbo", image=image)
 
 MODEL_ID = "Tongyi-MAI/Z-Image-Turbo"
 CACHE_DIR = "/cache/models"
+
 
 # =============================================================================
 # S3: 推理服务类
@@ -77,7 +67,9 @@ class ZImageInference:
         import os
         import torch
         from diffusers import ZImagePipeline, AutoencoderKL
-        from diffusers.models.transformers.transformer_z_image import ZImageTransformer2DModel
+        from diffusers.models.transformers.transformer_z_image import (
+            ZImageTransformer2DModel,
+        )
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         print("Loading Z-Image-Turbo model...")
@@ -195,13 +187,14 @@ class ZImageInference:
 # =============================================================================
 _ui_secrets = [s for s in [hf_secret, gradio_auth_secret] if s is not None]
 
+
 @app.function(
     gpu="L40S",
     volumes={"/cache": vol},
     secrets=_ui_secrets,
     timeout=86400,  # Max function runtime: 24 hours
-    container_idle_timeout=600,  # Keep container warm for 10 min after last request
-    keep_warm=0,  # Keep 1 container pre-warmed and ready
+    scaledown_window=600,  # Keep container warm for 10 min after last request
+    min_containers=0,  # Keep 1 container pre-warmed and ready
     max_containers=1,
 )
 @modal.concurrent(max_inputs=10)
@@ -219,7 +212,7 @@ def ui():
 # Uncomment below if you want extra insurance to keep containers alive
 
 # from modal import Period
-# 
+#
 # @app.function(
 #     schedule=Period(minutes=5),  # Ping every 5 minutes
 #     secrets=_ui_secrets,
@@ -228,12 +221,12 @@ def ui():
 #     """Optional: Ping service to prevent cold starts"""
 #     import requests
 #     import os
-#     
+#
 #     service_url = os.getenv("SERVICE_URL")  # Set in Modal dashboard
 #     if not service_url:
 #         print("⚠️ SERVICE_URL not set, skipping heartbeat")
 #         return
-#     
+#
 #     try:
 #         response = requests.get(f"{service_url}/", timeout=10)
 #         print(f"✅ Heartbeat OK: {response.status_code}")
@@ -253,28 +246,29 @@ def ui():
 def test_img2img():
     """Test img2img generation with detailed logging"""
     import sys
-    sys.path.insert(0, '/app')
-    
+
+    sys.path.insert(0, "/app")
+
     print("=" * 60)
     print("Testing img2img generation...")
     print("=" * 60)
-    
+
     try:
         from gradio_app import load_pipeline, create_generate_img2img
         from PIL import Image
-        
+
         print("\n1. Loading models...")
         pipe, vae = load_pipeline()
         print("✅ Models loaded successfully")
-        
+
         print("\n2. Creating generator function...")
         generate_img2img = create_generate_img2img(pipe, vae)
         print("✅ Generator function created")
-        
+
         print("\n3. Creating test image...")
-        test_image = Image.new('RGB', (512, 512), color='red')
+        test_image = Image.new("RGB", (512, 512), color="red")
         print(f"✅ Test image created: {test_image.size}")
-        
+
         print("\n4. Running img2img generation...")
         result_image, seed = generate_img2img(
             prompt="a beautiful landscape with mountains",
@@ -283,16 +277,17 @@ def test_img2img():
             num_steps=8,
             seed=42,
             random_seed=False,
-            shift=3.0
+            shift=3.0,
         )
-        
+
         print(f"\n✅ SUCCESS! Generated image with seed: {seed}")
         print(f"   Result image size: {result_image.size}")
         return f"SUCCESS - Seed: {seed}"
-        
+
     except Exception as e:
         print(f"\n❌ ERROR: {e}")
         import traceback
+
         traceback.print_exc()
         return f"FAILED: {str(e)}"
 

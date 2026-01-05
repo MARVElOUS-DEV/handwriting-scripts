@@ -7,29 +7,41 @@
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import modal
+
+# Add repo root to sys.path to allow importing modal_libs
+repo_root = Path(__file__).parent.parent
+sys.path.append(str(repo_root))
+
+from modal_libs import (
+    get_base_image,
+    get_hf_secret,
+    get_model_cache_volume,
+    download_hf_model_file,
+)
 
 # =============================================================================
 # S1: 环境准备 - 构建基础镜像
 # =============================================================================
 image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("git", "wget", "curl")
-    .pip_install(
-        "fastapi[standard]==0.115.4",
-        "comfy-cli==1.5.3",
-        "requests==2.32.3",
+    get_base_image(
+        python_version="3.12",
+        pip_packages=[
+            "fastapi[standard]==0.115.4",
+            "comfy-cli==1.5.3",
+            "requests==2.32.3",
+            "huggingface_hub[hf_transfer]==0.34.4",
+        ],
     )
     .run_commands("comfy --skip-prompt install --fast-deps --nvidia")
+    .add_local_python_source("modal_libs")
 )
 
 # HuggingFace Secret
-try:
-    hf_secret = modal.Secret.from_name("huggingface-secret")
-except modal.exception.NotFoundError:
-    hf_secret = None
+hf_secret = get_hf_secret()
 
 
 # =============================================================================
@@ -42,11 +54,9 @@ def hf_download():
     - qwen_3_4b.safetensors (CLIP 文本编码器)
     - ae.safetensors (VAE 解码器)
     """
-    from huggingface_hub import hf_hub_download
-
     hf_token = os.getenv("HF_TOKEN")
     repo_id = "Comfy-Org/z_image_turbo"
-    
+
     print(f"📦 从 {repo_id} 下载模型...")
 
     # 模型配置列表 (文件路径包含 split_files/ 前缀)
@@ -55,35 +65,41 @@ def hf_download():
             "filename": "split_files/diffusion_models/z_image_turbo_bf16.safetensors",
             "target_dir": "/root/comfy/ComfyUI/models/diffusion_models",
             "target_name": "z_image_turbo_bf16.safetensors",
-            "desc": "主扩散模型"
+            "desc": "主扩散模型",
         },
         {
             "filename": "split_files/text_encoders/qwen_3_4b.safetensors",
             "target_dir": "/root/comfy/ComfyUI/models/clip",
             "target_name": "qwen_3_4b.safetensors",
-            "desc": "CLIP 文本编码器"
+            "desc": "CLIP 文本编码器",
         },
         {
             "filename": "split_files/vae/ae.safetensors",
             "target_dir": "/root/comfy/ComfyUI/models/vae",
             "target_name": "ae.safetensors",
-            "desc": "VAE 解码器"
-        }
+            "desc": "VAE 解码器",
+        },
     ]
 
     for model in models:
         print(f"📥 下载 {model['desc']}: {model['target_name']}...")
-        
-        cached_path = hf_hub_download(
+
+        # We need to manually symlink here because download_hf_model_file
+        # symlinks to `target_dir/filename.name`.
+        # But here `target_name` might be different or `filename` includes subdir.
+        # Actually download_hf_model_file logic:
+        # target_path = Path(target_dir) / Path(filename).name
+        # Here filename has "split_files/..." prefix.
+        # So Path(filename).name is just the file name.
+        # target_name in dict is also just the file name.
+        # So it matches.
+
+        download_hf_model_file(
             repo_id=repo_id,
             filename=model["filename"],
-            cache_dir="/cache",
-            token=hf_token
+            target_dir=model["target_dir"],
+            token=hf_token,
         )
-        
-        Path(model["target_dir"]).mkdir(parents=True, exist_ok=True)
-        target_path = f"{model['target_dir']}/{model['target_name']}"
-        subprocess.run(f"ln -sf {cached_path} {target_path}", shell=True, check=True)
         print(f"   ✅ {model['desc']} 完成")
 
     print("🎉 所有模型下载完成!")
@@ -96,38 +112,35 @@ def create_workflow_file():
             "class_type": "UNETLoader",
             "inputs": {
                 "unet_name": "z_image_turbo_bf16.safetensors",
-                "weight_dtype": "default"
-            }
+                "weight_dtype": "default",
+            },
         },
         "2": {
             "class_type": "DualCLIPLoader",
             "inputs": {
                 "clip_name1": "qwen_3_4b.safetensors",
                 "clip_name2": "qwen_3_4b.safetensors",
-                "type": "z_image"
-            }
+                "type": "z_image",
+            },
         },
-        "3": {
-            "class_type": "VAELoader",
-            "inputs": {"vae_name": "ae.safetensors"}
-        },
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": "ae.safetensors"}},
         "4": {
             "class_type": "CLIPTextEncode",
             "inputs": {
                 "text": "一位美丽的亚洲女性，照片级真实，自然光线，高清细节",
-                "clip": ["2", 0]
-            }
+                "clip": ["2", 0],
+            },
         },
         "5": {
             "class_type": "CLIPTextEncode",
             "inputs": {
                 "text": "低质量，模糊，畸形，丑陋，文字，水印",
-                "clip": ["2", 0]
-            }
+                "clip": ["2", 0],
+            },
         },
         "6": {
             "class_type": "EmptyLatentImage",
-            "inputs": {"width": 1024, "height": 1024, "batch_size": 1}
+            "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
         },
         "7": {
             "class_type": "KSampler",
@@ -141,19 +154,19 @@ def create_workflow_file():
                 "cfg": 1.0,
                 "sampler_name": "euler",
                 "scheduler": "simple",
-                "denoise": 1.0
-            }
+                "denoise": 1.0,
+            },
         },
         "8": {
             "class_type": "VAEDecode",
-            "inputs": {"samples": ["7", 0], "vae": ["3", 0]}
+            "inputs": {"samples": ["7", 0], "vae": ["3", 0]},
         },
         "9": {
             "class_type": "SaveImage",
-            "inputs": {"filename_prefix": "z_image_turbo", "images": ["8", 0]}
-        }
+            "inputs": {"filename_prefix": "z_image_turbo", "images": ["8", 0]},
+        },
     }
-    
+
     workflow_dir = Path("/root/comfy/ComfyUI/user/default/workflows")
     workflow_dir.mkdir(parents=True, exist_ok=True)
     workflow_path = workflow_dir / "z_image_turbo.json"
@@ -164,18 +177,11 @@ def create_workflow_file():
 # =============================================================================
 # S3: 服务配置
 # =============================================================================
-vol = modal.Volume.from_name("z-image-turbo-cache", create_if_missing=True)
+vol = get_model_cache_volume("z-image-turbo-cache")
 
-image = (
-    image.pip_install("huggingface_hub[hf_transfer]==0.34.4")
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
-    .run_function(
-        hf_download,
-        volumes={"/cache": vol},
-        secrets=[hf_secret] if hf_secret else []
-    )
-    .run_function(create_workflow_file)
-)
+image = image.run_function(
+    hf_download, volumes={"/cache": vol}, secrets=[hf_secret] if hf_secret else []
+).run_function(create_workflow_file)
 
 app = modal.App(name="z-image-turbo", image=image)
 
@@ -183,12 +189,7 @@ app = modal.App(name="z-image-turbo", image=image)
 # =============================================================================
 # S4: UI 服务
 # =============================================================================
-@app.function(
-    max_containers=1,
-    gpu="L40S",
-    volumes={"/cache": vol},
-    timeout=86400
-)
+@app.function(max_containers=1, gpu="L40S", volumes={"/cache": vol}, timeout=86400)
 @modal.concurrent(max_inputs=10)
 @modal.web_server(8000, startup_timeout=60)
 def ui():
